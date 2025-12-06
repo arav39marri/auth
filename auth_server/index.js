@@ -2,8 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const jwt = require("jsonwebtoken");
-const fetch = (...args) =>
-  import("node-fetch").then(({ default: fetch }) => fetch(...args));
+const axios = require("axios"); 
 require("dotenv").config();
 
 const app = express();
@@ -41,7 +40,7 @@ const GOOGLE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/userinfo.profile",
 ];
 
-app.listen(PORT,(req,res)=>{
+app.listen(PORT,()=>{
   console.log(`server started at port ${PORT}`);
 
 });
@@ -59,8 +58,10 @@ app.get("/auth/google", (req, res) => {
   });
 
   const consentUrl = `${GOOGLE_OAUTH_URL}?${params.toString()}`;
+  console.log(`consentUrl : ${consentUrl}`);
   return res.redirect(consentUrl);
 });
+
 app.get("/google/callback", async (req, res) => {
   try {
     console.log("entered") ;
@@ -84,26 +85,27 @@ app.get("/google/callback", async (req, res) => {
       grant_type: "authorization_code",
     });
 
-    const tokenResponse = await fetch(GOOGLE_ACCESS_TOKEN_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: tokenParams.toString(),
-    });
+    // --- FIX 1 & 2: Use axios.post() and remove manual content-type/body handling ---
+    const tokenResponse = await axios.post(
+      GOOGLE_ACCESS_TOKEN_URL, 
+      tokenParams.toString(), // Axios handles URLSearchParams correctly when passed this string
+      {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+      }
+    );
 
-    const tokenData = await tokenResponse.json();
-    if (!tokenResponse.ok) {
-      console.error("Token error:", tokenData);
-      return res
-        .status(500)
-        .json({ error: "Failed to fetch tokens", details: tokenData });
-    }
-
+    // --- FIX 3: Axios puts parsed data in '.data' ---
+    console.log(tokenResponse);
+    const tokenData = tokenResponse.data;
+    // Note: Axios automatically throws if !response.ok, so the manual check below is redundant but harmless.
+    // if (!tokenResponse.ok) { ... } 
+    
     const accessToken = tokenData.access_token;
 
     // 2) Get user info
-    const userInfoRes = await fetch(
+    const userInfoRes = await axios.get(
       "https://www.googleapis.com/oauth2/v3/userinfo",
       {
         headers: {
@@ -111,7 +113,9 @@ app.get("/google/callback", async (req, res) => {
         },
       }
     );
-    const userInfo = await userInfoRes.json();
+    
+    // --- FIX 4: Axios puts parsed data in '.data' ---
+    const userInfo = userInfoRes.data;
 
     // 3) Create JWT with minimal user info
     const payload = {
@@ -126,14 +130,14 @@ app.get("/google/callback", async (req, res) => {
     // 4) Set HTTP-only cookie
     res.cookie("auth_token", jwtToken, {
       httpOnly: true,
-      secure: false, // true in production with HTTPS
+      secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
       sameSite: "lax",
     });
 
     // 5) Redirect to React app
     return res.redirect("http://localhost:3000/dashboard");
   } catch (err) {
-    console.error("Error in /google/callback:", err);
+    console.error("Error in /google/callback:", err.response ? err.response.data : err.message); // Log better error details
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -160,10 +164,9 @@ app.get("/me", authMiddleware, (req, res) => {
 app.post("/logout", (req, res) => {
   res.clearCookie("auth_token", {
     httpOnly: true,
-    secure: false,   // set true in production (HTTPS)
+    secure: process.env.NODE_ENV === 'production',
     sameSite: "lax",
   });
 
   return res.json({ message: "Logged out successfully" });
 });
-
